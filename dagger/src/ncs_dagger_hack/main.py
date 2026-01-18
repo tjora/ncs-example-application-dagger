@@ -74,6 +74,45 @@ class NcsDaggerHack:
             value = value.with_mounted_directory("/src/" + repo.path, repo_dir)
 
         return await value.with_workdir("/src")  # .terminal()
+
+    @function
+    async def west_lockfile_update(self, src: dagger.Directory, lockfile_path: str):
+        """
+
+        lockfile obtained with command hosted at git repository alongside the west.yaml manifest
+            west list --format "{name} {path} {revision} {sha} {url}" > west.lockdump
+        A more permanent lockfile with versioning etc must be made before making this public
+        """
+        # Get the contents of the file
+        west_lockfile = src.file(lockfile_path)
+        contents = await west_lockfile.contents()
+        repos, manifest_repo = parse(contents)
+        west_dir = dag.directory().with_new_file(
+            "config",
+            WEST_CONFIG.format(
+                path=manifest_repo.path, file="west.yml"
+            ),  # TODO: Add these to manifest
+        )
+
+        value = dag.container().from_("ghcr.io/nrfconnect/sdk-nrf-toolchain:latest")
+        value = value.with_mounted_directory(
+            "/src/" + manifest_repo.path,
+            src,
+        ).with_mounted_directory(
+            "/src/.west",
+            west_dir,
+        )
+        for repo in repos:
+            repo_dir = (
+                dag.git(repo.url)
+                .ref(repo.sha)
+                .tree()
+                .with_new_file("/.git/refs/heads/manifest-rev", repo.sha)
+            )
+            # What is best here, use mounted or not? mounts faster, lets use that and check that it works
+            value = value.with_mounted_directory("/src/" + repo.path, repo_dir)
+        return await value.with_workdir("/src")
+
         # .with_exec(
         #    [
         #        "bash",
