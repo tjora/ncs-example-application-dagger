@@ -1,0 +1,23 @@
+name: Dagger
+
+on: [push]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Checkout
+    runs-on: ubuntu-22.04
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+        with:
+          filter: "dagger*"
+      - name: dagger
+        uses: dagger/dagger-for-github@v8.2.0
+        with:
+          #module: ${{ github.server_url }}/${{ github.repository }}
+          call: ncs-checkout-git --repository=${{ github.server_url }}/${{ github.repository }} --ref=${{ github.sha }} --lockfile-path=west.lockdump
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+          version: "latest" # semver vX.Y.Z
