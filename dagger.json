@@ -1,0 +1,8 @@
+{
+  "name": "ncs-dagger-hack",
+  "engineVersion": "v0.19.10",
+  "sdk": {
+    "source": "python"
+  },
+  "source": "dagger"
+}
