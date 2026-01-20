@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+from multiprocessing import Condition
 
 import dagger
+import yaml
 from dagger import dag, function, object_type
 
 WEST_CONFIG = """[manifest]
@@ -9,109 +10,82 @@ file = {file}
 """
 
 
-@dataclass
-class Repo:
-    name: str
-    path: str
-    revision: str
-    sha: str
-    url: str
-
-
-def parse(content: str):
-    """
-    west list --format "{name} {path} {revision} {sha} {url}" > west.lockdump
-    """
-    repos = []
-    manifest = None
-    for line in content.splitlines():
-        name, path, revision, sha, url = line.split()
-        if name == "manifest":
-            manifest = Repo(name, path, revision, sha, url)
-        else:
-            repos.append(Repo(name, path, revision, sha, url))
-    return repos, manifest
-
-
 @object_type
 class NcsDaggerHack:
     @function
-    async def ncs_checkout_git(self, repository: str, ref: str, lockfile_path: str):
+    async def west_unfreeze_git(self, repository: str, ref: str, freezefile_path: str):
         """
+        Fetch project from git repository and dependencies from the west.freeze file
 
-        lockfile obtained with command hosted at git repository alongside the west.yaml manifest
-            west list --format "{name} {path} {revision} {sha} {url}" > west.lockdump
-        A more permanent lockfile with versioning etc must be made before making this public
+        west.freeze obtained with command hosted at git repository alongside the west.yaml manifest
+            west manifest --freeze --active-only > west.freeze
         """
         # Get the contents of the file
         manifest_repo_dir = dag.git(repository).ref(ref).tree()
-        west_lockfile = manifest_repo_dir.file(lockfile_path)
-        contents = await west_lockfile.contents()
-        repos, manifest_repo = parse(contents)
+        west_freezefile = manifest_repo_dir.file(freezefile_path)
+        contents = await west_freezefile.contents()
+
+        await self._build_checkout(
+            manifest=contents, manifest_repo_dir=manifest_repo_dir
+        )
+
+    @function
+    async def west_unfreeze(self, src: dagger.Directory, freezefile_path: str):
+        """
+        Fetch dependencies from west.freeze file in src directory
+
+        west.freeze obtained with command hosted at git repository alongside the west.yaml manifest
+            west manifest --freeze --active-only > west.freeze
+        """
+        # Get the contents of the file
+        freezefile = src.file(freezefile_path)
+        contents = await freezefile.contents()
+        await self._build_checkout(manifest=contents, manifest_repo_dir=src)
+
+    def _build_checkout(self, manifest, manifest_repo_dir):
+        manifest = yaml.safe_load(manifest)
         west_dir = dag.directory().with_new_file(
             "config",
             WEST_CONFIG.format(
-                path=manifest_repo.path, file="west.yml"
+                path=manifest["manifest"]["self"]["path"], file="west.yml"
             ),  # TODO: Add these to manifest
         )
 
         value = dag.container().from_("ghcr.io/nrfconnect/sdk-nrf-toolchain:latest")
         value = value.with_mounted_directory(
-            "/src/" + manifest_repo.path,
+            "/src/" + manifest["manifest"]["self"]["path"],
             manifest_repo_dir,
         ).with_mounted_directory(
             "/src/.west",
             west_dir,
         )
-        for repo in repos:
+        for project in manifest["manifest"]["projects"]:
             repo_dir = (
-                dag.git(repo.url)
-                .ref(repo.sha)
+                dag.git(project["url"])
+                .ref(project["revision"])
                 .tree()
-                .with_new_file("/.git/refs/heads/manifest-rev", repo.sha)
+                .with_new_file("/.git/refs/heads/manifest-rev", project["revision"])
             )
+            path = project.get("path", project["name"])
+
             # What is best here, use mounted or not? mounts faster, lets use that and check that it works
-            value = value.with_mounted_directory("/src/" + repo.path, repo_dir)
-
-        return await value.with_workdir("/src")  # .terminal()
-
-    @function
-    async def west_lockfile_update(self, src: dagger.Directory, lockfile_path: str):
-        """
-
-        lockfile obtained with command hosted at git repository alongside the west.yaml manifest
-            west list --format "{name} {path} {revision} {sha} {url}" > west.lockdump
-        A more permanent lockfile with versioning etc must be made before making this public
-        """
-        # Get the contents of the file
-        west_lockfile = src.file(lockfile_path)
-        contents = await west_lockfile.contents()
-        repos, manifest_repo = parse(contents)
-        west_dir = dag.directory().with_new_file(
-            "config",
-            WEST_CONFIG.format(
-                path=manifest_repo.path, file="west.yml"
-            ),  # TODO: Add these to manifest
-        )
-
-        value = dag.container().from_("ghcr.io/nrfconnect/sdk-nrf-toolchain:latest")
-        value = value.with_mounted_directory(
-            "/src/" + manifest_repo.path,
-            src,
-        ).with_mounted_directory(
-            "/src/.west",
-            west_dir,
-        )
-        for repo in repos:
-            repo_dir = (
-                dag.git(repo.url)
-                .ref(repo.sha)
-                .tree()
-                .with_new_file("/.git/refs/heads/manifest-rev", repo.sha)
+            value = value.with_mounted_directory("/src/" + path, repo_dir)
+        value = (
+            value.with_workdir("/src")
+            #            .terminal()
+            .with_exec(
+                [
+                    #                    "ACCEPT_JLINK_LICENSE=0",
+                    "bash",
+                    "-c",
+                    """source /opt/toolchain-env.sh
+cd nrf/samples/bluetooth/peripheral_lbs/
+west build --board nrf54l15dk/nrf54l15/cpuapp --pristine -o=-j4
+            """,
+                ]
             )
-            # What is best here, use mounted or not? mounts faster, lets use that and check that it works
-            value = value.with_mounted_directory("/src/" + repo.path, repo_dir)
-        return await value.with_workdir("/src")
+        )
+        return value
 
         # .with_exec(
         #    [
