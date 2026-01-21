@@ -13,7 +13,9 @@ file = {file}
 @object_type
 class NcsDaggerHack:
     @function
-    async def west_unfreeze_git(self, repository: str, ref: str, freezefile_path: str):
+    async def west_unfreeze_git(
+        self, repository: str, ref: str, freezefile: str
+    ) -> dagger.Container:
         """
         Fetch project from git repository and dependencies from the west.freeze file
 
@@ -22,15 +24,17 @@ class NcsDaggerHack:
         """
         # Get the contents of the file
         manifest_repo_dir = dag.git(repository).ref(ref).tree()
-        west_freezefile = manifest_repo_dir.file(freezefile_path)
+        west_freezefile = manifest_repo_dir.file(freezefile)
         contents = await west_freezefile.contents()
 
-        await self._build_checkout(
+        return await self._build_checkout(
             manifest=contents, manifest_repo_dir=manifest_repo_dir
         )
 
     @function
-    async def west_unfreeze(self, src: dagger.Directory, freezefile_path: str):
+    async def west_unfreeze(
+        self, src: dagger.Directory, freezefile: str
+    ) -> dagger.Container:
         """
         Fetch dependencies from west.freeze file in src directory
 
@@ -38,9 +42,9 @@ class NcsDaggerHack:
             west manifest --freeze --active-only > west.freeze
         """
         # Get the contents of the file
-        freezefile = src.file(freezefile_path)
-        contents = await freezefile.contents()
-        await self._build_checkout(manifest=contents, manifest_repo_dir=src)
+        freezefile_f = src.file(freezefile)
+        contents = await freezefile_f.contents()
+        return await self._build_checkout(manifest=contents, manifest_repo_dir=src)
 
     def _build_checkout(self, manifest, manifest_repo_dir):
         manifest = yaml.safe_load(manifest)
@@ -70,22 +74,28 @@ class NcsDaggerHack:
 
             # What is best here, use mounted or not? mounts faster, lets use that and check that it works
             value = value.with_mounted_directory("/src/" + path, repo_dir)
-        value = (
-            value.with_workdir("/src")
-            #            .terminal()
-            .with_exec(
-                [
-                    #                    "ACCEPT_JLINK_LICENSE=0",
-                    "bash",
-                    "-c",
-                    """source /opt/toolchain-env.sh
-cd nrf/samples/bluetooth/peripheral_lbs/
-west build --board nrf54l15dk/nrf54l15/cpuapp --pristine -o=-j4
+        return value.with_workdir("/src")
+
+    @function
+    async def west_build(self, container: dagger.Container, path: str):
+        """
+        Fetch dependencies from west.freeze file in src directory
+
+        west.freeze obtained with command hosted at git repository alongside the west.yaml manifest
+            west manifest --freeze --active-only > west.freeze
+        """
+        # Get the contents of the file
+        return await container.with_exec(
+            [
+                "bash",
+                "-c",
+                f"""
+            source /opt/toolchain-env.sh
+            cd {path}
+            west build --board nrf54l15dk/nrf54l15/cpuapp --pristine -o=-j4
             """,
-                ]
-            )
+            ]
         )
-        return value
 
         # .with_exec(
         #    [
