@@ -1,5 +1,3 @@
-from multiprocessing import Condition
-
 import dagger
 import yaml
 from dagger import dag, function, object_type
@@ -96,6 +94,33 @@ class NcsDaggerHack:
             """,
             ]
         )
+
+    @function
+    async def github_action(self, src: dagger.Directory, freezefile: str):
+        cont = await self.west_unfreeze(src, freezefile)
+        return await cont.with_exec(
+            [
+                "bash",
+                "-c",
+                f"""
+            source /opt/toolchain-env.sh
+            cd ncs-example-application
+            west twister -T app -v --inline-logs --integration
+            """,
+            ]
+        ).with_exec(
+            [
+                "bash",
+                "-c",
+                f"""
+            source /opt/toolchain-env.sh
+            cd /src/ncs-example-application
+            west twister -T tests -v --inline-logs --integration
+            """,
+            ]
+        )
+
+        return await self.west_build(cont, "nrf/samples/bluetooth/peripheral_lbs/")
 
         # .with_exec(
         #    [
